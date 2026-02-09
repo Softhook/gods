@@ -19,7 +19,7 @@ let CANVAS_W, CANVAS_H;
 let WORLD = {
   gravity: 0.55,
   maxFallSpeed: 16,
-  jumpStrength: 11,
+  jumpStrength: 15,
   runAccel: 0.6,
   runDeccel: 0.75,
   runSpeed: 3.6,
@@ -37,6 +37,7 @@ let WORLD = {
   enemies: [],
   items: [],
   doors: [],
+  tubes: [],
   bullets: [],
   enemyBullets: [],
   particles: [],
@@ -44,6 +45,7 @@ let WORLD = {
   player: null,
   currentLevel: 0,
   levelLength: 2000,
+  score: 0,
   validationMessages: []
 };
 
@@ -71,6 +73,12 @@ const PAL = {
   keyGold: '#ffd24d',
   keyGlow: '#fff0a6',
   healthGreen: '#6ee16e',
+  coinGold: '#ffd966',
+  coinEdge: '#c99720',
+  coinGlow: '#fff2b5',
+  powerBlue: '#61d7ff',
+  powerPurple: '#b18bff',
+  tubeGreen: '#3be37a',
 
   bullet: '#ffe55e',
   muzzle: '#fff7a8'
@@ -89,7 +97,7 @@ function finite(n) { return Number.isFinite(n); }
 function guardEntity(e) {
   if (!e) return false;
   if (!finite(e.x) || !finite(e.y)) return false;
-  if (e.y > 4000 || e.y < -4000 || e.x < -4000 || e.x > 1e7) return false;
+  if (e.y > 1e7 || e.y < -1e7 || e.x < -1e7 || e.x > 1e9) return false;
   return true;
 }
 
@@ -201,6 +209,15 @@ function drawGlow(x, y, r, col, alpha = 90) {
   }
 }
 
+function spawnPowerup(x, y) {
+  const subtype = random() < 0.5 ? 'haste' : 'power';
+  WORLD.items.push(new Item('power', x - 10, y - 10, subtype));
+}
+
+function spawnCoin(x, y) {
+  WORLD.items.push(new Item('coin', x - 10, y - 10));
+}
+
 /* =========================
    BASE CLASSES
    ========================= */
@@ -261,9 +278,10 @@ class Particle extends Entity {
    ITEMS & DOORS
    ========================= */
 class Item extends Entity {
-  constructor(type, x, y) {
+  constructor(type, x, y, subtype = null) {
     super(x, y, 20, 20);
     this.type = type;
+    this.subtype = subtype;
     this.phase = random(0, TWO_PI);
   }
   draw() {
@@ -283,7 +301,54 @@ class Item extends Entity {
       rect(this.x + 4, this.y + 6 + bob, 12, 12, 4);
       fill('#fff'); rect(this.x + 9, this.y + 8 + bob, 2, 8, 1);
       rect(this.x + 6, this.y + 11 + bob, 8, 2, 1);
+    } else if (this.type === 'coin') {
+      const spin = abs(sin(frameCount * 0.2 + this.phase));
+      const w = 14 * (0.25 + spin * 0.75);
+      drawGlow(cx, cy, 30, PAL.coinGlow, 90);
+      noStroke(); fill(PAL.coinGold);
+      ellipse(cx, cy, w, 14);
+      stroke(PAL.coinEdge); strokeWeight(2);
+      line(cx - w * 0.2, cy - 4, cx - w * 0.2, cy + 4);
+      line(cx + w * 0.2, cy - 4, cx + w * 0.2, cy + 4);
+      strokeWeight(1);
+    } else if (this.type === 'power') {
+      const glow = this.subtype === 'haste' ? PAL.powerBlue : PAL.powerPurple;
+      drawGlow(cx, cy, 36, glow, 110);
+      noStroke(); fill(glow);
+      rect(this.x + 4, this.y + 5 + bob, 12, 12, 4);
+      fill('#0b2230');
+      rect(this.x + 7, this.y + 7 + bob, 6, 8, 2);
+      fill('#fff');
+      if (this.subtype === 'haste') {
+        triangle(this.x + 6, this.y + 9 + bob, this.x + 14, this.y + 11 + bob, this.x + 6, this.y + 13 + bob);
+      } else {
+        rect(this.x + 8, this.y + 8 + bob, 4, 8, 1);
+        rect(this.x + 6, this.y + 10 + bob, 8, 4, 1);
+      }
     }
+  }
+}
+
+class Tube extends Entity {
+  constructor(x, y, w, h, targetLevel, hidden = false) {
+    super(x, y, w, h);
+    this.targetLevel = targetLevel;
+    this.hidden = hidden;
+    this.phase = random(0, TWO_PI);
+  }
+  draw() {
+    const p = WORLD.player;
+    const show = !this.hidden || (p && dist(p.x, p.y, this.x, this.y) < 140);
+    if (!show) return;
+
+    const glow = sin(frameCount * 0.06 + this.phase) * 0.5 + 0.5;
+    const topCol = lerpColor(color('#1a7d44'), color(PAL.tubeGreen), glow);
+    drawShadow(this.x, this.y, this.w, this.h, 26, 6);
+    drawVerticalGradient(this.x, this.y, this.w, this.h, topCol, '#0f3a21', 14, 6);
+    noStroke(); fill('#0c2918');
+    rect(this.x + 4, this.y + 8, this.w - 8, this.h - 12, 6);
+    fill('#b8ffd6');
+    ellipse(this.x + this.w / 2, this.y + 12, this.w - 10, 10);
   }
 }
 
@@ -303,6 +368,17 @@ class Door extends Entity {
     let lamp = lerpColor(color('#55707f'), color('#8af5ff'), t);
     if (this.needsKey === false) lamp = color('#8aff9c');
     noStroke(); fill(lamp); ellipse(this.x + this.w / 2, this.y + 10, 8, 8);
+
+    if (this.needsKey) {
+      // lock icon
+      stroke('#f5d46b'); strokeWeight(2);
+      noFill();
+      arc(this.x + this.w / 2, this.y + this.h / 2 - 2, 10, 10, PI, TWO_PI);
+      noStroke(); fill('#f5d46b');
+      rect(this.x + this.w / 2 - 6, this.y + this.h / 2 - 2, 12, 10, 3);
+      fill('#694a00');
+      rect(this.x + this.w / 2 - 1, this.y + this.h / 2 + 2, 2, 5, 1);
+    }
   }
 }
 
@@ -310,10 +386,11 @@ class Door extends Entity {
    BULLETS
    ========================= */
 class Bullet extends Entity {
-  constructor(x, y, dir, speed = 9) {
+  constructor(x, y, dir, speed = 9, damage = 20) {
     super(x, y, 12, 4);
     this.vx = speed * dir; this.vy = 0;
     this.lifetime = 120;
+    this.damage = damage;
   }
   update() {
     this.x += this.vx; this.y += this.vy;
@@ -338,11 +415,16 @@ class EnemyBullet extends Bullet {
    ENEMIES
    ========================= */
 class Enemy extends Entity {
-  constructor(x, y, w, h, hp = 40) { super(x, y, w, h); this.hp = hp; this.facing = 1; this.hitFlash = 0; }
+  constructor(x, y, w, h, hp = 40, type = 'enemy') { super(x, y, w, h); this.hp = hp; this.facing = 1; this.hitFlash = 0; this.type = type; this.powerDropChance = 0; }
   takeHit(dmg = 20) {
     this.hp -= dmg; this.hitFlash = 8;
     for (let i = 0; i < 6; i++) WORLD.particles.push(new Particle(this.x + this.w / 2, this.y + this.h / 2, random(-1, 1), random(-2, -0.5), 14, PAL.enemyGlow, 3));
-    if (this.hp <= 0) this.remove = true;
+    if (this.hp <= 0) {
+      if (this.powerDropChance > 0 && random() < this.powerDropChance) {
+        spawnPowerup(this.x + this.w / 2, this.y + this.h / 2);
+      }
+      this.remove = true;
+    }
   }
   drawHealth() {
     let t = clamp(this.hp / 40, 0, 1);
@@ -353,7 +435,7 @@ class Enemy extends Entity {
 }
 
 class Walker extends Enemy {
-  constructor(x, y) { super(x, y, 30, 40, 40); this.speed = 1.2; this.legPhase = random(0, TWO_PI); }
+  constructor(x, y) { super(x, y, 30, 40, 40, 'walker'); this.speed = 1.2; this.legPhase = random(0, TWO_PI); }
   update() {
     const p = WORLD.player; this.facing = (p.x > this.x) ? 1 : -1;
     let aheadX = this.x + (this.facing > 0 ? this.w + 2 : -2);
@@ -385,7 +467,7 @@ class Walker extends Enemy {
 }
 
 class Turret extends Enemy {
-  constructor(x, y) { super(x, y, 32, 32, 50); this.cooldown = 60 + floor(random(0, 30)); this.blinkPhase = random(0, TWO_PI); }
+  constructor(x, y) { super(x, y, 32, 32, 50, 'turret'); this.cooldown = 60 + floor(random(0, 30)); this.blinkPhase = random(0, TWO_PI); this.powerDropChance = 0.45; }
   update() {
     const p = WORLD.player; this.facing = (p.x > this.x) ? 1 : -1;
     if (this.cooldown-- <= 0) {
@@ -408,7 +490,7 @@ class Turret extends Enemy {
 }
 
 class Flyer extends Enemy {
-  constructor(x, y) { super(x, y, 28, 24, 30); this.speed = 1.8; this.wing = random(0, TWO_PI); }
+  constructor(x, y) { super(x, y, 28, 24, 30, 'flyer'); this.speed = 1.8; this.wing = random(0, TWO_PI); this.powerDropChance = 0.35; }
   update() {
     const p = WORLD.player; const dx = p.x - this.x; const dy = p.y - this.y;
     const dist = max(1, sqrt(dx * dx + dy * dy));
@@ -438,6 +520,8 @@ class Player extends Entity {
     this.runAnim = 0; this.shootFlash = 0;
     this.iFrames = 0;           // NEW: invulnerability frames after contact damage
     this.contactTick = 0;       // for periodic damage if staying in contact
+    this.powerup = null;
+    this.powerupTimer = 0;
   }
   inputAndPhysics() {
     let target = 0;
@@ -445,8 +529,13 @@ class Player extends Entity {
     if (keyIsDown(RIGHT_ARROW)) target += 1;
     if (target !== 0) this.facing = target;
 
-    const accel = this.onGround ? WORLD.runAccel : WORLD.runAccel * WORLD.airControl;
-    if (target !== 0) this.vx = clamp(this.vx + target * accel, -WORLD.runSpeed, WORLD.runSpeed);
+    const speedBoost = this.powerup === 'haste' ? 1.35 : 1;
+    const runSpeed = WORLD.runSpeed * speedBoost;
+    const runAccel = WORLD.runAccel * speedBoost;
+    const jumpStrength = WORLD.jumpStrength * (this.powerup === 'haste' ? 1.12 : 1);
+
+    const accel = this.onGround ? runAccel : runAccel * WORLD.airControl;
+    if (target !== 0) this.vx = clamp(this.vx + target * accel, -runSpeed, runSpeed);
     else { this.vx *= this.onGround ? WORLD.frictionGround : WORLD.frictionAir; if (abs(this.vx) < 0.05) this.vx = 0; }
 
     this.vy = clamp(this.vy + WORLD.gravity, -999, WORLD.maxFallSpeed);
@@ -454,7 +543,7 @@ class Player extends Entity {
     if (this.jumpBuffer > 0) this.jumpBuffer--;
     if (this.coyote > 0) this.coyote--;
     if (this.jumpBuffer > 0 && (this.onGround || this.coyote > 0)) {
-      this.vy = -WORLD.jumpStrength; this.onGround = false; this.coyote = 0; this.jumpBuffer = 0;
+      this.vy = -jumpStrength; this.onGround = false; this.coyote = 0; this.jumpBuffer = 0;
       for (let i = 0; i < 8; i++) WORLD.particles.push(new Particle(this.x + this.w / 2, this.y + this.h, random(-1.2, 1.2), random(-2.5, -1.0), 14, '#ffffff', 3));
     }
 
@@ -475,7 +564,8 @@ class Player extends Entity {
   shoot() {
     const bx = this.facing > 0 ? this.x + this.w + 2 : this.x - 10;
     const by = this.y + 16; const dir = this.facing > 0 ? 1 : -1;
-    WORLD.bullets.push(new Bullet(bx, by, dir, 9));
+    const dmg = this.powerup === 'power' ? 30 : 20;
+    WORLD.bullets.push(new Bullet(bx, by, dir, 9, dmg));
     for (let i = 0; i < 6; i++) WORLD.particles.push(new Particle(bx, by, dir * random(1, 2), random(-1, 1), 10, PAL.muzzle, 3));
     this.shootFlash = 4;
   }
@@ -486,10 +576,20 @@ class Player extends Entity {
     if (this.health <= 0) loadLevel(WORLD.currentLevel, true);
   }
   update() {
+    if (this.powerupTimer > 0) {
+      this.powerupTimer--;
+      if (this.powerupTimer === 0) this.powerup = null;
+    }
+
     this.inputAndPhysics();
 
+    if (this.y > height + 40) {
+      loadLevel(WORLD.currentLevel, true);
+      return;
+    }
+
     // Bullets → enemies
-    for (let b of WORLD.bullets) for (let e of WORLD.enemies) if (!e.remove && aabbOverlap(b.rect, e)) { e.takeHit(20); b.remove = true; }
+    for (let b of WORLD.bullets) for (let e of WORLD.enemies) if (!e.remove && aabbOverlap(b.rect, e)) { e.takeHit(b.damage || 20); b.remove = true; }
 
     // Enemy bullets → player
     for (let eb of WORLD.enemyBullets) if (aabbOverlap(eb.rect, this)) { eb.remove = true; this.damage(12); }
@@ -508,10 +608,35 @@ class Player extends Entity {
     }
 
     // Items
-    for (let it of WORLD.items) if (!it.remove && aabbOverlap(it, this)) { if (it.type === 'key') this.keys++; if (it.type === 'health') this.health = Math.min(100, this.health + 35); it.remove = true; }
+    for (let it of WORLD.items) if (!it.remove && aabbOverlap(it, this)) {
+      switch (it.type) {
+        case 'key':
+          this.keys++;
+          break;
+        case 'health':
+          this.health = Math.min(100, this.health + 35);
+          break;
+        case 'power':
+          this.powerup = it.subtype; this.powerupTimer = 600;
+          break;
+        case 'coin':
+          WORLD.score += 1;
+          break;
+      }
+      it.remove = true;
+    }
 
     // Doors
     for (let d of WORLD.doors) if (aabbOverlap(d, this)) { if (!d.needsKey || this.keys > 0) { if (d.needsKey) this.keys--; nextLevel(); break; } }
+
+    // Tubes (touch to enter)
+    for (let t of WORLD.tubes) {
+      if (aabbOverlap(t, this)) {
+        WORLD.currentLevel = t.targetLevel;
+        loadLevel(t.targetLevel);
+        break;
+      }
+    }
   }
   draw() {
     // Shadow
@@ -521,20 +646,60 @@ class Player extends Entity {
     const flash = (this.iFrames > 0 && (frameCount % 6 < 3));
     const mainFill = flash ? '#fefefe' : (this.shootFlash > 0 ? '#fff6d3' : PAL.playerMain);
 
-    drawOutlineRect(this.x, this.y, this.w, this.h, mainFill, PAL.playerOutline, 2, 6);
-    noStroke(); fill(PAL.playerShade); rect(this.x + 4, this.y + 10, this.w - 8, this.h - 14, 4);
-    drawOutlineRect(this.x + 6, this.y - 10, this.w - 12, 14, mainFill, PAL.playerOutline, 2, 4);
+    // Cute robot body
+    const sway = sin(this.runAnim) * 3;
+    noStroke();
+    fill(this.powerup === 'power' ? '#7d4cff' : '#2b3b5a');
+    rect(this.x + (this.facing > 0 ? -4 : this.w - 6), this.y + 10, 10, 20 + sway, 6);
 
-    noStroke(); fill('#3b2a1e'); rect(this.x + 10, this.y - 6, 4, 3, 1); rect(this.x + this.w - 14, this.y - 6, 4, 3, 1);
-    fill(PAL.playerAccent); rect(this.x + this.w / 2 - 2, this.y, 4, 3, 1);
+    // Torso (rounded)
+    drawOutlineRect(this.x + 1, this.y + 6, this.w - 2, this.h - 8, mainFill, PAL.playerOutline, 2, 10);
+    drawVerticalGradient(this.x + 4, this.y + 12, this.w - 8, this.h - 18, '#f3d9a6', '#caa16b', 10, 6);
+    fill('#ffffff');
+    ellipse(this.x + this.w / 2, this.y + this.h / 2 + 2, 10, 10);
+    fill('#76d9ff');
+    ellipse(this.x + this.w / 2, this.y + this.h / 2 + 2, 5, 5);
 
-    const sway = sin(this.runAnim) * 3; fill(mainFill);
-    rect(this.x + (this.facing > 0 ? this.w - 6 : 2), this.y + 16 + sway, 4, 10, 2);
+    // Head (big, cute)
+    drawOutlineRect(this.x + 2, this.y - 14, this.w - 4, 18, mainFill, PAL.playerOutline, 2, 9);
+    fill('#2a374a'); rect(this.x + 6, this.y - 9, this.w - 12, 7, 4);
+    fill('#8fe6ff');
+    ellipse(this.x + (this.facing > 0 ? this.w - 9 : 9), this.y - 5, 6, 6);
+    ellipse(this.x + (this.facing > 0 ? this.w - 16 : 16), this.y - 5, 6, 6);
+    fill('#ff9fb3');
+    ellipse(this.x + (this.facing > 0 ? 8 : this.w - 8), this.y - 1, 4, 3);
 
-    if (this.shootFlash > 0) { const fx = this.facing > 0 ? this.x + this.w + 2 : this.x - 6; const fy = this.y + 16; drawGlow(fx, fy, 22, PAL.muzzle, 120); }
+    // Antenna
+    stroke(PAL.playerOutline); strokeWeight(2);
+    line(this.x + this.w / 2, this.y - 14, this.x + this.w / 2, this.y - 20);
+    noStroke(); fill('#ffd36b');
+    ellipse(this.x + this.w / 2, this.y - 21, 6, 6);
+
+    // Arms
+    noStroke(); fill(mainFill);
+    rect(this.x + (this.facing > 0 ? this.w - 6 : 2), this.y + 18 + sway, 4, 12, 3);
+    rect(this.x + (this.facing > 0 ? 2 : this.w - 6), this.y + 20 - sway * 0.5, 4, 10, 3);
+
+    // Boots
+    fill('#3b2a1e');
+    rect(this.x + 4, this.y + this.h - 7, 9, 6, 3);
+    rect(this.x + this.w - 13, this.y + this.h - 7, 9, 6, 3);
+
+    if (this.shootFlash > 0) {
+      const fx = this.facing > 0 ? this.x + this.w + 2 : this.x - 6;
+      const fy = this.y + 16;
+      drawGlow(fx, fy, 22, PAL.muzzle, 120);
+    }
+
+    if (this.powerup === 'haste') {
+      drawGlow(this.x + this.w / 2, this.y + this.h / 2, 36, PAL.powerBlue, 70);
+    }
 
     // Key icon
-    if (this.keys > 0) { fill(PAL.keyGold); rect(this.x + this.w + 6, this.y - 16, 10, 6, 2); noStroke(); fill(PAL.keyGold); ellipse(this.x + this.w + 15, this.y - 13, 8, 8); }
+    if (this.keys > 0) {
+      fill(PAL.keyGold); rect(this.x + this.w + 6, this.y - 16, 10, 6, 2);
+      noStroke(); fill(PAL.keyGold); ellipse(this.x + this.w + 15, this.y - 13, 8, 8);
+    }
   }
 }
 
@@ -547,42 +712,74 @@ class Player extends Entity {
    P = player start
    K = key
    H = health
+  C = coin
    W = walker
    T = turret
    F = flyer
    D = door (locked)
+   U = hidden tube (requires tubeTargets mapping)
+   V = visible tube (requires tubeTargets mapping)
 */
 const LEVELS_ASCII = [
   {
     name: 'Level 1',
+    tubeTargets: { U: 2 },
     grid: [
-      "..............................................................................................",
-      "..............................................................................................",
-      "..............................................F...............................................",
-      "..............................................................................................",
-      "..............................................######.........................................",
-      "........................F.............#####.................................####..............",
-      "..............................#####............................####...........................",
-      "......................#####............................####..................................",
-      ".....K.........W............................W............W....................................",
-      "###########################..............#############.............###############.......D....",
-      "###########################..............#############.....................###############...."
+      "...............................................................................................................",
+      "...............................................................................................................",
+      "..............................................F.....................................................C.........",
+      "...............................................................................................................",
+      "..............................................######..........................................................",
+      "........................F.............#####.................................####...............................",
+      "..............................#####...........................####.............................................",
+      "......................#####............................####...................................................",
+      ".....K....C....W............................W............W............................U.......................",
+      "###########################U.............#############.............###############.......D......................",
+      "###########################..............#############.....................###############....................."
     ]
   },
   {
     name: 'Level 2',
+    tubeTargets: { U: 3 },
     grid: [
-      "..............................................................................................",
-      ".......................................................................................F......",
-      "..............................................######..........................................",
-      "..................................######.............................................#####....",
-      "..............######...........................................######..........................",
-      ".....W.........................................................................T..............",
-      "##############...................############...........................############..........",
-      "###############.................##############.........................#############..........",
-      "...........K................H....................P...........................................D",
-      "##############################################################################################",
-      "##############################################################################################"
+      "...............................................................................................................",
+      ".............................................................................................F...............C",
+      "..............................................######..........................................................",
+      "..................................######.............................................#####...................",
+      "..............######...........................................######.........................................",
+      ".....W.........................................................................T......................U.......",
+      "##############...................############...........................############.........................",
+      "###############.................##############.........................#############.........................",
+      "...........K................H....................P.........................................................D",
+      "##############################################################################################################",
+      "##############################################################################################################"
+    ]
+  },
+  {
+    name: 'Secret 1',
+    secret: true,
+    tubeTargets: { V: 0 },
+    grid: [
+      "....................................................................................",
+      "...............F.....................................................F.............",
+      "..............................................................................C.....",
+      ".................######..................######....................................",
+      "....W..............................................................W..............",
+      "#########################...........#############..................############....",
+      "#########################...........#############.............V....############...."
+    ]
+  },
+  {
+    name: 'Secret 2',
+    secret: true,
+    tubeTargets: { V: 1 },
+    grid: [
+      "............................................................................................",
+      "........F..............................................F............................C......",
+      ".............................######............................######.......................",
+      "............W..........................................................T...................",
+      "#######################.................###############................###################..",
+      "#######################.................###############............V...###################.."
     ]
   }
 ];
@@ -592,21 +789,36 @@ const LEVELS_ASCII = [
    ========================= */
 function parseASCIILevel(asciiLevel) {
   const rows = asciiLevel.grid.length;
-  const cols = asciiLevel.grid[0].length;
+  const cols = asciiLevel.grid.reduce((m, r) => Math.max(m, r.length), 0);
 
   const solids = [];
   const items = [];
   const enemies = [];
   const doors = [];
+  const tubes = [];
   let playerStart = { x: 40, y: 40 };
+  const tubeTargets = asciiLevel.tubeTargets || {};
+
+  const itemSymbols = {
+    K: 'key',
+    H: 'health',
+    C: 'coin'
+  };
+
+  const enemySymbols = {
+    W: { type: 'walker', dx: -15, dy: -40 },
+    T: { type: 'turret', dx: -16, dy: -32 },
+    F: { type: 'flyer',  dx: -14, dy: -12, fly: true }
+  };
 
   // 1) Merge horizontal runs of '#'
   for (let r = 0; r < rows; r++) {
     let c = 0;
     while (c < cols) {
-      if (asciiLevel.grid[r][c] === '#') {
+      const ch = asciiLevel.grid[r][c] || '.';
+      if (ch === '#') {
         let c2 = c;
-        while (c2 < cols && asciiLevel.grid[r][c2] === '#') c2++;
+        while (c2 < cols && (asciiLevel.grid[r][c2] || '.') === '#') c2++;
         const x = c * TILE, y = r * TILE;
         const w = (c2 - c) * TILE, h = TILE;
         solids.push({ x, y, w, h });
@@ -630,37 +842,36 @@ function parseASCIILevel(asciiLevel) {
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const ch = asciiLevel.grid[r][c];
+      const ch = asciiLevel.grid[r][c] || '.';
       const cx = c * TILE + TILE / 2;
       const yTop = r * TILE;
 
       if (ch === 'P') {
         const top = dropToTop(cx, yTop);
         playerStart = { x: cx - 14, y: top - 42 };
-      } else if (ch === 'K') {
+      } else if (itemSymbols[ch]) {
         const top = dropToTop(cx, yTop);
-        items.push({ type: 'key', x: cx - 10, y: top - 26 });
-      } else if (ch === 'H') {
-        const top = dropToTop(cx, yTop);
-        items.push({ type: 'health', x: cx - 10, y: top - 26 });
+        items.push({ type: itemSymbols[ch], x: cx - 10, y: top - 26 });
       } else if (ch === 'D') {
         const top = dropToTop(cx, yTop);
         doors.push({ x: cx - 20, y: top - 40, w: 40, h: 40, needsKey: true });
-      } else if (ch === 'W') {
+      } else if (ch === 'U' || ch === 'V') {
         const top = dropToTop(cx, yTop);
-        enemies.push({ type: 'walker', x: cx - 15, y: top - 40 });
-      } else if (ch === 'T') {
+        const target = tubeTargets[ch];
+        if (Number.isFinite(target)) tubes.push({ x: cx - 20, y: top - 40, w: 40, h: 40, target, hidden: ch === 'U' });
+      } else if (enemySymbols[ch]) {
+        const cfg = enemySymbols[ch];
         const top = dropToTop(cx, yTop);
-        enemies.push({ type: 'turret', x: cx - 16, y: top - 32 });
-      } else if (ch === 'F') {
-        enemies.push({ type: 'flyer', x: cx - 14, y: yTop + TILE / 2 - 12 });
+        const y = cfg.fly ? (yTop + TILE / 2 + cfg.dy) : (top + cfg.dy);
+        const x = cx + cfg.dx;
+        enemies.push({ type: cfg.type, x, y });
       }
     }
   }
 
   return {
     platforms: solids,
-    items, enemies, doors, playerStart,
+    items, enemies, doors, tubes, playerStart,
     length: cols * TILE
   };
 }
@@ -751,10 +962,18 @@ function validateAndCorrectLevel(L) {
 /* =========================
    LEVEL LOADING
    ========================= */
+function computeTileForLevel(level) {
+  const rows = level.grid.length || 1;
+  const ideal = Math.floor(windowHeight / rows);
+  return clamp(ideal, 24, 72);
+}
+
 function loadLevel(index, respawn = false) {
   WORLD.platforms = []; WORLD.enemies = []; WORLD.items = [];
-  WORLD.doors = []; WORLD.bullets = []; WORLD.enemyBullets = [];
+  WORLD.doors = []; WORLD.tubes = []; WORLD.bullets = []; WORLD.enemyBullets = [];
   WORLD.particles = []; WORLD.validationMessages = [];
+
+  TILE = computeTileForLevel(LEVELS_ASCII[index]);
 
   const parsed = parseASCIILevel(LEVELS_ASCII[index]);
   const L = {
@@ -762,6 +981,7 @@ function loadLevel(index, respawn = false) {
     enemies: parsed.enemies.map(e => ({...e})),
     items: parsed.items.map(i => ({...i, w: 20, h: 20})),
     doors: parsed.doors.map(d => ({...d})),
+    tubes: parsed.tubes.map(t => ({...t})),
     playerStart: {...parsed.playerStart},
     length: parsed.length
   };
@@ -771,19 +991,16 @@ function loadLevel(index, respawn = false) {
   WORLD.levelLength = L.length;
   for (let p of L.platforms) WORLD.platforms.push(new Platform(p.x, p.y, p.w, p.h));
   for (let e of L.enemies) {
-    if (e.type === 'walker') WORLD.enemies.push(new Walker(e.x, e.y));
-    if (e.type === 'turret') WORLD.enemies.push(new Turret(e.x, e.y));
-    if (e.type === 'flyer')  WORLD.enemies.push(new Flyer(e.x, e.y));
+    const ctor = e.type === 'walker' ? Walker : (e.type === 'turret' ? Turret : Flyer);
+    WORLD.enemies.push(new ctor(e.x, e.y));
   }
-  for (let it of L.items) WORLD.items.push(new Item(it.type, it.x, it.y));
+  for (let it of L.items) WORLD.items.push(new Item(it.type, it.x, it.y, it.subtype));
   for (let d of L.doors) WORLD.doors.push(new Door(d.x, d.y, d.w, d.h, d.needsKey));
+  for (let t of L.tubes) WORLD.tubes.push(new Tube(t.x, t.y, t.w, t.h, t.target, t.hidden));
 
-  let prevKeys = 0;
-  if (respawn && WORLD.player) prevKeys = WORLD.player.keys;
   WORLD.player = new Player(L.playerStart.x, L.playerStart.y);
-  WORLD.player.keys = prevKeys;
 
-  WORLD.cameraX = clamp(WORLD.player.x - width / 2, 0, WORLD.levelLength - width);
+  WORLD.cameraX = clamp(WORLD.player.x - width / 2, 0, Math.max(0, WORLD.levelLength - width));
 }
 
 /* =========================
@@ -795,6 +1012,27 @@ function drawParallax() {
     const t = i / height;
     fill(lerpColor(color(PAL.sky1), color(PAL.sky2), t));
     rect(0, i, width, 1);
+  }
+
+  // Stars (far layer)
+  const starOff = -WORLD.cameraX * 0.05;
+  for (let x = -200; x <= width + 200; x += 60) {
+    for (let y = 30; y <= height * 0.45; y += 70) {
+      const n = sin((x + starOff) * 0.05 + y * 0.03) * 0.5 + 0.5;
+      const tw = 1.5 + n * 1.5;
+      fill(255, 255, 255, 80 + n * 120);
+      ellipse(x + starOff % 60, y + n * 6, tw, tw);
+    }
+  }
+
+  // Clouds (mid-far layer)
+  const cloudOff = -WORLD.cameraX * 0.12;
+  for (let x = -300; x <= width + 300; x += 180) {
+    const y = height * 0.18 + sin((x + cloudOff) * 0.01) * 16;
+    const w = 90 + sin((x + cloudOff) * 0.02) * 20;
+    fill(255, 255, 255, 18);
+    ellipse(x + cloudOff % 180, y, w, 30);
+    ellipse(x + 20 + cloudOff % 180, y + 6, w * 0.7, 24);
   }
 
   function layer(col, speed, yBase, waveAmp, step) {
@@ -819,8 +1057,8 @@ function drawParallax() {
    ========================= */
 function setup() {
   // Start with a reasonable size; we’ll go fullscreen on first click
-  CANVAS_W = Math.max(640, Math.min(960, windowWidth));
-  CANVAS_H = Math.max(360, Math.min(540, windowHeight));
+  CANVAS_W = windowWidth;
+  CANVAS_H = windowHeight;
   createCanvas(CANVAS_W, CANVAS_H);
   textFont('monospace');
   loadLevel(WORLD.currentLevel);
@@ -830,7 +1068,7 @@ function draw() {
   background(0);
   drawParallax();
 
-  const targetCam = clamp(WORLD.player.x - width / 2, 0, WORLD.levelLength - width);
+  const targetCam = clamp(WORLD.player.x - width / 2, 0, Math.max(0, WORLD.levelLength - width));
   WORLD.cameraX += (targetCam - WORLD.cameraX) * WORLD.cameraEase;
 
   push();
@@ -839,6 +1077,7 @@ function draw() {
   for (let p of WORLD.platforms) p.draw();
   for (let it of WORLD.items) if (!it.remove) it.draw();
   for (let d of WORLD.doors) d.draw();
+  for (let t of WORLD.tubes) t.draw();
 
   WORLD.player.update();
   WORLD.player.draw();
@@ -884,15 +1123,18 @@ function drawDebugWorld() {
   stroke('#ffff00'); rect(WORLD.player.x, WORLD.player.y, WORLD.player.w, WORLD.player.h);
   stroke('#66ff66'); for (let it of WORLD.items) rect(it.x, it.y, it.w, it.h);
   stroke('#66aaff'); for (let d of WORLD.doors) rect(d.x, d.y, d.w, d.h);
+  stroke('#44ff99'); for (let t of WORLD.tubes) rect(t.x, t.y, t.w, t.h);
 
   let y = 40; noStroke(); fill(255);
   for (let msg of WORLD.validationMessages) { text(msg, WORLD.cameraX + 20, y); y += 16; }
 }
 
 function drawHUD() {
-  noStroke(); fill(0, 0, 0, 90); rect(0, 0, width, 34);
+  noStroke(); fill(0, 0, 0, 90); rect(0, 0, width, 54);
   fill('#fff'); textSize(14);
   text(`Level: ${WORLD.currentLevel + 1}/${LEVELS_ASCII.length} — ${LEVELS_ASCII[WORLD.currentLevel].name}`, 14, 22);
+  fill(PAL.coinGold);
+  text(`Score: ${WORLD.score}`, 14, 46);
 
   const hw = 180, hx = 260, hy = 10;
   fill('#333'); rect(hx, hy, hw, 14, 7);
@@ -900,6 +1142,12 @@ function drawHUD() {
 
   fill(PAL.keyGold); rect(hx + hw + 20, hy, 12, 6, 2);
   fill('#fff'); text(`x ${WORLD.player.keys}`, hx + hw + 40, 22);
+
+  if (WORLD.player.powerup) {
+    const col = WORLD.player.powerup === 'haste' ? PAL.powerBlue : PAL.powerPurple;
+    fill(col); rect(hx + hw + 90, hy, 12, 12, 3);
+    fill('#fff'); text(WORLD.player.powerup === 'haste' ? 'HASTE' : 'POWER', hx + hw + 108, 22);
+  }
 
   if (WORLD.debug) { fill('#ff0'); text('DEBUG ON (D)', width - 130, 22); }
 }
@@ -925,15 +1173,18 @@ function mousePressed() {
 // Keep canvas matched to the window size (and adjust camera clamp)
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
-  // Keep player within new camera bounds
-  WORLD.cameraX = clamp(WORLD.player.x - width / 2, 0, WORLD.levelLength - width);
+  loadLevel(WORLD.currentLevel, true);
 }
 
 /* =========================
    LEVEL FLOW
    ========================= */
 function nextLevel() {
-  WORLD.currentLevel++;
-  if (WORLD.currentLevel >= LEVELS_ASCII.length) WORLD.currentLevel = 0;
+  let idx = WORLD.currentLevel;
+  for (let i = 0; i < LEVELS_ASCII.length; i++) {
+    idx = (idx + 1) % LEVELS_ASCII.length;
+    if (!LEVELS_ASCII[idx].secret) break;
+  }
+  WORLD.currentLevel = idx;
   loadLevel(WORLD.currentLevel);
 }
